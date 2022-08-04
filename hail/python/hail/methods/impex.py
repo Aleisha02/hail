@@ -2978,8 +2978,6 @@ def import_avro(paths, *, key=None, intervals=None):
         with DataFileReader(avro_file, DatumReader()) as data_file_reader:
             tr = ir.AvroTableReader(avro.schema.parse(data_file_reader.schema), paths, key, intervals)
     return Table(ir.TableRead(tr))
-<<<<<<< HEAD
-=======
 
 
 @typecheck(paths=oneof(str, sequenceof(str)),
@@ -3323,4 +3321,4 @@ def make_parents(pops,
 
 def rand_int(lower, upper):
     return hl.rand_cat(hl.range(upper - lower).map(lambda x: 1)) + lower
->>>>>>> 4413ffd97 (make parents and children and required imports)
+
