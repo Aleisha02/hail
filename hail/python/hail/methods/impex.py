@@ -27,6 +27,9 @@ from hail.utils.deduplicate import deduplicate
 
 from .import_lines_helpers import split_lines, should_remove_line
 
+import numpy as np
+import pandas as pd
+import math
 
 def locus_interval_expr(contig, start, end, includes_start, includes_end,
                         reference_genome, skip_invalid_intervals):
@@ -2975,3 +2978,349 @@ def import_avro(paths, *, key=None, intervals=None):
         with DataFileReader(avro_file, DatumReader()) as data_file_reader:
             tr = ir.AvroTableReader(avro.schema.parse(data_file_reader.schema), paths, key, intervals)
     return Table(ir.TableRead(tr))
+<<<<<<< HEAD
+=======
+
+
+@typecheck(paths=oneof(str, sequenceof(str)),
+           key=table_key_type,
+           min_partitions=nullable(int),
+           impute=bool,
+           no_header=bool,
+           comment=oneof(str, sequenceof(str)),
+           missing=oneof(str, sequenceof(str)),
+           types=dictof(str, hail_type),
+           skip_blank_lines=bool,
+           force_bgz=bool,
+           filter=nullable(str),
+           find_replace=nullable(sized_tupleof(str, str)),
+           force=bool,
+           source_file_field=nullable(str))
+def import_csv(paths,
+                key=None,
+                min_partitions=None,
+                impute=False,
+                no_header=False,
+                comment=(),
+                missing="NA",
+                types={},
+                skip_blank_lines=False,
+                force_bgz=False,
+                filter=None,
+                find_replace=None,
+                force=False,
+                source_file_field=None) -> Table:
+   """Import csv file as :class:`.Table`.
+
+   Examples
+    --------
+
+    Let's import fields from a CSV file with missing data:
+
+    .. code-block:: text
+
+        $ cat data/samples2.csv
+        Batch,PT-ID
+        1kg,PT-0001
+        1kg,PT-0002
+        study1,PT-0003
+        study3,PT-0003
+        .,PT-0004
+        1kg,PT-0005
+        .,PT-0006
+        1kg,PT-0007
+
+    In this case, we should:
+
+    - Pass the non-default missing value ``.``
+
+    >>> table = hl.import_csv('data/samples2.csv', missing='.')
+
+    Notes
+    -----
+
+    The `impute` parameter tells Hail to scan the file an extra time to gather
+    information about possible field types. While this is a bit slower for large
+    files because the file is parsed twice, the convenience is often worth this
+    cost.
+
+    If set, the `comment` parameter causes Hail to skip any line that starts
+    with the given string(s). For example, passing ``comment='#'`` will skip any
+    line beginning in a pound sign. If the string given is a single character,
+    Hail will skip any line beginning with the character. Otherwise if the
+    length of the string is greater than 1, Hail will interpret the string as a
+    regex and will filter out lines matching the regex. For example, passing
+    ``comment=['#', '^track.*']`` will filter out lines beginning in a pound sign
+    and any lines that match the regex ``'^track.*'``.
+
+    The `missing` parameter defines the representation of missing data in the table.
+
+    .. note::
+
+        The `missing` parameter is **NOT** a regex. The `comment` parameter is
+        treated as a regex **ONLY** if the length of the string is greater than
+        1 (not a single character).
+
+    The `no_header` parameter indicates that the file has no header line. If
+    this option is passed, then the field names will be `f0`, `f1`,
+    ... `fN` (0-indexed).
+
+    The `types` parameter allows the user to pass the types of fields in the
+    table. It is an :obj:`dict` keyed by :class:`str`, with :class:`.HailType` values.
+    See the examples above for a standard usage. Additionally, this option can
+    be used to override type imputation. For example, if the field
+    ``Chromosome`` only contains the values ``1`` through ``22``, it will be
+    imputed to have type :py:data:`.tint32`, whereas most Hail methods expect
+    that a chromosome field will be of type :py:data:`.tstr`. Setting
+    ``impute=True`` and ``types={'Chromosome': hl.tstr}`` solves this problem.
+
+    Parameters
+    ----------
+
+    paths : :class:`str` or :obj:`list` of :obj:`str`
+        Files to import.
+    key : :class:`str` or :obj:`list` of :obj:`str`
+        Key fields(s).
+    min_partitions : :obj:`int` or :obj:`None`
+        Minimum number of partitions.
+    no_header : :obj:`bool`
+        If ``True```, assume the file has no header and name the N fields `f0`,
+        `f1`, ... `fN` (0-indexed).
+    impute : :obj:`bool`
+        If ``True``, Impute field types from the file.
+    comment : :class:`str` or :obj:`list` of :obj:`str`
+        Skip lines beginning with the given string if the string is a single
+        character. Otherwise, skip lines that match the regex specified. Multiple
+        comment characters or patterns should be passed as a list.
+    missing : :class:`str` or :obj:`list` [:obj:`str`]
+        Identifier(s) to be treated as missing.
+    types : :obj:`dict` mapping :class:`str` to :class:`.HailType`
+        Dictionary defining field types.
+    skip_blank_lines : :obj:`bool`
+        If ``True``, ignore empty lines. Otherwise, throw an error if an empty
+        line is found.
+    force_bgz : :obj:`bool`
+        If ``True``, load files as blocked gzip files, assuming
+        that they were actually compressed using the BGZ codec. This option is
+        useful when the file extension is not ``'.bgz'``, but the file is
+        blocked gzip, so that the file can be read in parallel and not on a
+        single node.
+    filter : :class:`str`, optional
+        Line filter regex. A partial match results in the line being removed
+        from the file. Applies before `find_replace`, if both are defined.
+    find_replace : (:class:`str`, :obj:`str`)
+        Line substitution regex. Functions like ``re.sub``, but obeys the exact
+        semantics of Java's
+        `String.replaceAll <https://docs.oracle.com/javase/8/docs/api/java/lang/String.html#replaceAll-java.lang.String-java.lang.String->`__.
+    force : :obj:`bool`
+        If ``True``, load gzipped files serially on one core. This should
+        be used only when absolutely necessary, as processing time will be
+        increased due to lack of parallelism.
+    source_file_field : :class:`str`, optional
+        If defined, the source file name for each line will be a field of the table
+        with this name. Can be useful when importing multiple tables using glob patterns.
+    Returns
+    -------
+    :class:`.Table`
+    """
+
+   ht = hl.import_table(paths, key=None, min_partitions=None, impute=False, no_header=False, comment=(), missing="NA",
+                        types={}, skip_blank_lines=False, force_bgz=False, filter=None, find_replace=None,
+                        force=False, source_file_field=None, delimiter = ",", quote ='"')
+   return ht
+
+@typecheck(parentops= sequenceof(Table),
+           momindex=int,
+           dadindex=int,
+)
+def make_child(parentops,
+             momindex,
+             dadindex) -> Table:
+
+    '''
+    Generates a child's genotype given parent genotypes
+    Notes:
+
+    To use, run hl.init(default_reference='GRCh38')
+
+    This function does not generate Chromosome 23
+    Probabilities for crossover events are not adjusted for distance from previous crossover events
+
+    Parameters:
+
+    parentops: List of tables containing genotypes for potential parents
+    momindex: index location on list of tables with mother's genotype
+    dadindex: index location on list of tables with father's genotype
+
+    '''
+
+    allchrm = hl.import_table('genetic_map_GRCh38_merged.tab', force=True, impute=True)
+    allchrm = allchrm.annotate(chrom=allchrm.chrom[3:])
+    allchrm = allchrm.annotate(chrom=hl.if_else(allchrm.chrom == 'X', 23, hl.int(allchrm.chrom)))
+    allchrm = allchrm.filter(allchrm.chrom != 23)
+    allchrms = allchrm.to_pandas()
+    allchrms = allchrms.sort_values(by=['chrom', 'pos'])
+
+    chrmlist = pd.unique(allchrms['chrom'])
+    chrm = []
+    for i in chrmlist:
+        i = allchrms.loc[allchrms['chrom'] == i]
+        chrm.append(i)
+
+    frames = range(22)
+
+    for frame in frames:
+        position1 = pd.DataFrame({'chrom': frame + 1, 'pos': 1, 'recomb_rate': 0, "pos_cm": 0}, index=[0])
+        chrm[frame] = pd.concat([position1, chrm[frame][:]]).reset_index(drop=True)
+        chrm[frame] = chrm[frame].sort_values(by='pos')
+
+    poissonmom = []
+    poissondad = []
+    for frame in frames:
+        chrm[frame]['cM_from_last'] = chrm[frame]['pos_cm'] - chrm[frame]['pos_cm'].shift(periods=+1)
+        chrm[frame]['prob for position'] = chrm[frame]['cM_from_last'] / chrm[frame]['pos_cm'].max()
+        chrm[frame]['shift'] = chrm[frame]['pos_cm'].shift(periods=+1)
+        chrm[frame]['dist_from_last'] = chrm[frame]['pos'] - chrm[frame]['pos'].shift(periods=+1)
+        chrm[frame]['for_each_pos'] = chrm[frame]['prob for position'] / chrm[frame]['dist_from_last']
+        chrm[frame] = chrm[frame].fillna(0)
+        num_crossesmom = np.random.poisson(lam=chrm[frame]['pos_cm'].max() / 25)
+        num_crossesdad = np.random.poisson(lam=chrm[frame]['pos_cm'].max() / 25)
+        poissonmom.append(num_crossesmom)
+        poissondad.append(num_crossesdad)
+
+    eggcrosses = []
+    spermcrosses = []
+    for frame in frames:
+        eggcross = {'segment': range(1, math.ceil(poissonmom[frame] / 4) + 1, 1)}
+        spermcross = {'segment': range(1, math.ceil(poissondad[frame] / 4) + 1, 1)}
+
+        eggcross = pd.DataFrame(eggcross)
+        spermcross = pd.DataFrame(spermcross)
+
+        eggchrmcross = np.random.choice(chrm[frame]['pos'],
+                                        size=poissonmom[frame], p=chrm[frame]['prob for position'])
+
+        spermchrmcross = np.random.choice(chrm[frame]['pos'],
+                                          size=poissondad[frame], p=chrm[frame]['prob for position'])
+        spermcross['upper limit'] = [spermchrmcross[i * 4] for i in range(math.ceil(len(spermchrmcross) / 4))]
+        eggcross['upper limit'] = [eggchrmcross[i * 4] for i in range(math.ceil(len(eggchrmcross) / 4))]
+
+        eggcross = pd.DataFrame(eggcross)
+        spermcross = pd.DataFrame(spermcross)
+
+        eggcross['lower limit'] = eggcross['upper limit'].shift(periods=+1)
+        spermcross['lower limit'] = spermcross['upper limit'].shift(periods=+1)
+
+        eggcross = eggcross.fillna(1)
+        spermcross = spermcross.fillna(1)
+
+        eggcross['lower limit'] = eggcross['lower limit'].astype(int)
+        spermcross['lower limit'] = spermcross['lower limit'].astype(int)
+
+        egglastchunk = pd.DataFrame(
+            {'segment': math.ceil(poissonmom[frame] / 4) + 1, 'lower limit': eggcross['upper limit'].max(),
+             "upper limit": chrm[frame]['pos'].max()}, index=[0])
+        spermlastchunk = pd.DataFrame(
+            {'segment': math.ceil(poissondad[frame] / 4) + 1, 'lower limit': spermcross['upper limit'].max(),
+             "upper limit": chrm[frame]['pos'].max()}, index=[0])
+
+        eggcross['upper limit'] = eggcross['upper limit'].astype(int)
+        spermcross['upper limit'] = spermcross['upper limit'].astype(int)
+        eggcross['lower limit'] = eggcross['lower limit'].astype(int)
+        spermcross['lower limit'] = spermcross['lower limit'].astype(int)
+
+        eggcross = pd.concat([eggcross, egglastchunk], ignore_index=True, axis=0)
+        spermcross = pd.concat([spermcross, spermlastchunk], ignore_index=True, axis=0)
+
+        eggcross = eggcross[['segment', 'lower limit', 'upper limit']]
+        spermcross = spermcross[['segment', 'lower limit', 'upper limit']]
+
+        eggcross['upper limit'] = eggcross['upper limit'].astype(int)
+        spermcross['upper limit'] = spermcross['upper limit'].astype(int)
+        eggcross['lower limit'] = eggcross['lower limit'].astype(int)
+        spermcross['lower limit'] = spermcross['lower limit'].astype(int)
+
+        eggcrosses.append(eggcross)
+        spermcrosses.append(spermcross)
+
+    for frame in frames:
+        eggcrosses[frame] = hl.Table.from_pandas(eggcrosses[frame])
+        spermcrosses[frame] = hl.Table.from_pandas(spermcrosses[frame])
+
+    for frame in frames:
+        eggcrosses[frame] = eggcrosses[frame].annotate(
+            interval=hl.interval(hl.locus('chr' + str(frame + 1), eggcrosses[frame]['lower limit']),
+                                 hl.locus('chr' + str(frame + 1), eggcrosses[frame]['upper limit'])))
+        spermcrosses[frame] = spermcrosses[frame].annotate(
+            interval=hl.interval(hl.locus('chr' + str(frame + 1), spermcrosses[frame]['lower limit']),
+                                 hl.locus('chr' + str(frame + 1), spermcrosses[frame]['upper limit'])))
+
+    for frame in frames:
+        eggcrosses[frame] = eggcrosses[frame].key_by(eggcrosses[frame].interval)
+        spermcrosses[frame] = spermcrosses[frame].key_by(spermcrosses[frame].interval)
+
+    alleggcrosses = hl.Table.union(*eggcrosses)
+    allspermcrosses = hl.Table.union(*spermcrosses)
+
+    parentops[momindex] = parentops[momindex].annotate(
+        eggsegment=alleggcrosses[parentops[momindex].locus].segment)
+    parentops[dadindex] = parentops[dadindex].annotate(
+        spermsegment=allspermcrosses[parentops[dadindex].locus].segment)
+
+    parentops[momindex] = parentops[momindex].annotate_globals(mombase=hl.int(hl.rand_bool(0.5)))
+    parentops[momindex] = parentops[momindex].annotate_globals(momalt=(1 - parentops[momindex].mombase))
+    parentops[dadindex] = parentops[dadindex].annotate_globals(dadbase=hl.int(hl.rand_bool(0.5)))
+    parentops[dadindex] = parentops[dadindex].annotate_globals(dadalt=(1 - parentops[dadindex].dadbase))
+
+    parentops[momindex] = parentops[momindex].annotate(
+        mombase_alt=(parentops[momindex].eggsegment + parentops[momindex].mombase) % 2)
+    parentops[dadindex] = parentops[dadindex].annotate(
+        dadbase_alt=(parentops[dadindex].spermsegment + parentops[dadindex].dadbase) % 2)
+
+    parentops[momindex] = parentops[momindex].annotate(egg=hl.if_else(parentops[momindex].mombase_alt == 0,
+                                                                      parentops[momindex].GT[
+                                                                          parentops[momindex].mombase],
+                                                                      parentops[momindex].GT[
+                                                                          parentops[momindex].momalt]))
+    parentops[dadindex] = parentops[dadindex].annotate(sperm=hl.if_else(parentops[dadindex].dadbase_alt == 0,
+                                                                        parentops[dadindex].GT[
+                                                                            parentops[dadindex].dadbase],
+                                                                        parentops[dadindex].GT[
+                                                                            parentops[dadindex].dadalt]))
+
+    parentops[momindex] = parentops[momindex].annotate(sperm=parentops[dadindex][parentops[momindex].key].sperm)
+    parentops[momindex] = parentops[momindex].annotate(
+        child=hl.call(parentops[momindex].egg, parentops[momindex].sperm, phased=True))
+
+    return parentops[momindex].child
+
+
+@typecheck(pops=int,
+           n_parentoptions=int,
+           n_variants=int,
+)
+def make_parents(pops,
+             n_parentoptions,
+             n_variants) -> Table:
+    parentops = []
+    for i in range(n_parentoptions):
+        mt = hl.balding_nichols_model(pops, 1, n_variants)
+        mt = mt.annotate_entries(
+            grandmother=mt.GT[0],
+            grandfather=mt.GT[1],
+        )
+        ht = mt.localize_entries('entries', 'cols')
+        ht = ht.select(
+            parent=ht.entries[0].drop('GT')
+        )
+        ht = ht.annotate(GT=hl.call(ht.parent.grandmother, ht.parent.grandfather, phased=True))
+        ht = ht.key_by(
+            locus=hl.locus('chr' + hl.str(rand_int(1,22)), ht.locus.position * 1_000_000),
+            alleles=ht.alleles)
+        parentops.append(ht)
+
+    return parentops
+
+def rand_int(lower, upper):
+    return hl.rand_cat(hl.range(upper - lower).map(lambda x: 1)) + lower
+>>>>>>> 4413ffd97 (make parents and children and required imports)
