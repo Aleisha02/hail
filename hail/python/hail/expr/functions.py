@@ -6205,6 +6205,7 @@ def _console_log(msg, result):
     indices, aggregations = unify_all(msg, result)
     return construct_expr(ir.ConsoleLog(msg._ir, result._ir), result.dtype, indices, aggregations)
 
+
 @typecheck(lower=int,
            upper=int)
 def rand_int(lower, upper):

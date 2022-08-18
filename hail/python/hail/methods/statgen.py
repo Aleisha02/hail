@@ -3377,6 +3377,7 @@ def _warn_if_no_intercept(caller, covariates):
         return True
     return False
 
+
 @typecheck(parentops=MatrixTable,
            pairs=array(tuple),
            genetic_map=str)
@@ -3609,37 +3610,3 @@ def make_parents(pops, n_parentoptions, n_variants) -> MatrixTable:
         alleles=mt.alleles)
 
     return mt
-
-
-@typecheck(sample1id=str,
-           sample2id=str,
-           mt=MatrixTable)
-def relationship_type(sample1id, sample2id, mt)->str :
-    """
-    Accepts 2 sample id's from a Matrix Table and determines the relationship between them
-
-    Parameters
-    ----------
-    sample1id: sample 1 id
-    sample2id: sample 2 id
-    mt: table containing sample genomes and familiy information - generated from make_children
-
-    Returns
-    -------
-    :class : '.Str' which identifies the relationship between sample1 and sample2
-    """
-    mt2 = mt.add_col_index()
-    sample_id_to_idx = hl.literal(mt2.aggregate_cols(hl.dict(hl.agg.collect((mt2.s, mt2.col_idx)))))
-    children_to_parents = hl.literal(mt2.aggregate_cols(
-        hl.dict(hl.agg.collect((mt2.col_idx, hl.set(hl.if_else(hl.is_defined(mt2.mother), [mt2.mother, mt2.father], hl.empty_array('int32')))))),
-        _localize=False))
-    sample1 = sample_id_to_idx[sample1id]
-    sample2 = sample_id_to_idx[sample2id]
-    sample1_parents = children_to_parents[sample1]
-    sample2_parents = children_to_parents[sample2]
-    return (hl.case()
-        .when(sample1id == sample2id, 'self')
-        .when(sample1_parents.contains(sample2) | sample2_parents.contains(sample1), 'parent-child')
-        .when((sample1_parents.size()>0)&(sample1_parents == sample2_parents)& (sample1id != sample2id), 'sibling')
-        .when(sample1_parents.intersection(sample2_parents).size() == 1, 'half-sibling')
-        .default('unrelated'))
