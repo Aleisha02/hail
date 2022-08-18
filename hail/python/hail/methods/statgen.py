@@ -2,6 +2,8 @@ import builtins
 import itertools
 import functools
 import math
+import numpy as np
+import pandas as pd
 from typing import Dict, Callable, Optional, Union, Tuple
 
 import hail
@@ -3374,3 +3376,270 @@ def _warn_if_no_intercept(caller, covariates):
                 '\n    To include an intercept, add 1.0 to the list of covariates.')
         return True
     return False
+
+@typecheck(parentops=MatrixTable,
+           pairs=array(tuple),
+           genetic_map=str)
+def make_children(parentops, pairs, genetic_map)-> MatrixTable:
+
+    """Uses a Matrix table of parent genomes to return a MatrixTable
+    of the same parent genomes in addition to the offsrpring genomes produced
+    by specified parent pairings
+
+    Notes
+    -------
+    The genetic map file used must fit the following specifications or an error will be raised
+
+    - The data for each chromosome must be in one table, preferably a tsv file.
+    - The fields for this table must include: 'chrom': indicating the locus' chromosome
+                                              'pos': indicating the locus's position on that chromosome
+                                              'pos_cm': the genetic map for the chromosome at that locus
+                                                        in centiMorgans
+
+    One such genetic map file that worked well in the development of this function was
+    http://csg.sph.umich.edu/locuszoom/download/recomb-hg38.tar.gz from from the University of Michigan's
+    locus zoom.
+
+    The expected reference chromosome is GRCh38
+
+    Parameters
+    -----------
+    parentops: MatrixTable containing parent genomes
+    pairs: array of any number of two-tuples referencing the desired parent pairings
+    genetic_map: path to genetic map file
+
+    Returns
+    --------
+    :class:`.MatrixTable` of parent and child genomes
+    """
+    parentops = parentops.localize_entries('option', 'columns')
+
+    allchrm = hl.import_table(genetic_map, impute=True, min_partitions=16)
+
+    allchrm = allchrm.annotate(chrom=allchrm.chrom[3:])
+    allchrm = allchrm.annotate(chrom=hl.if_else(allchrm.chrom == 'X', 23, hl.int(allchrm.chrom)))
+    allchrm = allchrm.filter(allchrm.chrom != 23)
+    allchrms = allchrm.to_pandas()
+    allchrms = allchrms.sort_values(by=['chrom', 'pos'])
+
+    chrmlist = pd.unique(allchrms['chrom'])
+    chrm = []
+    for i in chrmlist:
+        i = allchrms.loc[allchrms['chrom'] == i]
+        chrm.append(i)
+
+    frames = range(22)
+
+    for frame in frames:
+        position1 = pd.DataFrame({'chrom': frame + 1, 'pos': 1, 'recomb_rate': 0, "pos_cm": 0}, index=[0])
+        chrm[frame] = pd.concat([position1, chrm[frame][:]]).reset_index(drop=True)
+        chrm[frame] = chrm[frame].sort_values(by='pos')
+
+    poissonmom = []
+    poissondad = []
+    for frame in frames:
+        chrm[frame]['cM_from_last'] = chrm[frame]['pos_cm'] - chrm[frame]['pos_cm'].shift(periods=+1)
+        chrm[frame]['prob for interval'] = chrm[frame]['cM_from_last'] / chrm[frame]['pos_cm'].max()
+        chrm[frame]['dist_from_last'] = chrm[frame]['pos'] - chrm[frame]['pos'].shift(periods=+1)
+        chrm[frame]['for_each_pos'] = chrm[frame]['prob for interval'] / chrm[frame]['dist_from_last']
+        chrm[frame] = chrm[frame].fillna(0)
+    paireggcrosses = []
+    pairspermcrosses = []
+    for i in pairs:
+        eggcrosses = []
+        spermcrosses = []
+        for frame in frames:
+
+            num_crossesmom = np.random.poisson(lam=chrm[frame]['pos_cm'].max() / 25)
+            num_crossesdad = np.random.poisson(lam=chrm[frame]['pos_cm'].max() / 25)
+            poissonmom.append(num_crossesmom)
+            poissondad.append(num_crossesdad)
+
+            eggchrmcrossint = np.random.choice(chrm[frame]['pos'],
+                                               size=poissonmom[frame], p=chrm[frame]['prob for interval'])
+            spermchrmcrossint = np.random.choice(chrm[frame]['pos'],
+                                                 size=poissonmom[frame], p=chrm[frame]['prob for interval'])
+            eggchrmcross = []
+            spermchrmcross = []
+            for i in eggchrmcrossint:
+                eggchrmcrosses = i - np.random.randint(chrm[frame].loc[chrm[frame]['pos'] == i]['dist_from_last'])
+                eggchrmcross.append(eggchrmcrosses[0])
+            for i in spermchrmcrossint:
+                spermchrmcrosses = i - np.random.randint(chrm[frame].loc[chrm[frame]['pos'] == i]['dist_from_last'])
+                spermchrmcross.append(spermchrmcrosses[0])
+
+            supperlimit = [spermchrmcross[i * 4] for i in range(math.ceil(len(spermchrmcross) / 4))]
+            eupperlimit = [eggchrmcross[i * 4] for i in range(math.ceil(len(eggchrmcross) / 4))]
+
+            spermcross = pd.DataFrame({'upper limit': supperlimit})
+            eggcross = pd.DataFrame({'upper limit': eupperlimit})
+
+            eggcross = eggcross.sort_values(by='upper limit')
+            spermcross = spermcross.sort_values(by='upper limit')
+
+            eggcross['segment'] = range(1, math.ceil(len(eggchrmcross) / 4) + 1, 1)
+            spermcross['segment'] = range(1, math.ceil(len(eggchrmcross) / 4) + 1, 1)
+
+            eggcross['lower limit'] = eggcross['upper limit'].shift(periods=+1)
+            spermcross['lower limit'] = spermcross['upper limit'].shift(periods=+1)
+
+            eggcross = eggcross.fillna(1)
+            spermcross = spermcross.fillna(1)
+
+            eggcross['lower limit'] = eggcross['lower limit'].astype(int)
+            spermcross['lower limit'] = spermcross['lower limit'].astype(int)
+
+            egglastchunk = pd.DataFrame({'segment': math.ceil(poissonmom[frame] / 4) + 1,
+                                         "upper limit": chrm[frame]['pos'].max(),
+                                         'lower limit': eggcross['upper limit'].max()}, index=[0])
+            spermlastchunk = pd.DataFrame(
+                {'segment': math.ceil(poissondad[frame] / 4) + 1, "upper limit": chrm[frame]['pos'].max(),
+                 'lower limit': spermcross['upper limit'].max(),
+                 }, index=[0])
+
+            eggcross = pd.concat([eggcross, egglastchunk], ignore_index=True, axis=0)
+            spermcross = pd.concat([spermcross, spermlastchunk], ignore_index=True, axis=0)
+
+            eggcross = eggcross[['segment', 'lower limit', 'upper limit']]
+            spermcross = spermcross[['segment', 'lower limit', 'upper limit']]
+
+            eggcrosses.append(list(eggcross['lower limit']))
+            spermcrosses.append(list(spermcross['lower limit']))
+
+        paireggcrosses.append(eggcrosses)
+        pairspermcrosses.append(spermcrosses)
+
+    parentops = parentops.annotate_globals(pairs=pairs, paireggcrosses=paireggcrosses,
+                                           pairspermcrosses=pairspermcrosses)
+
+    parentops = parentops.annotate_globals(
+        eggbase=parentops.paireggcrosses.map(lambda x: x.map(lambda y: hl.int(hl.rand_bool(0.5)))),
+        spermbase=parentops.pairspermcrosses.map(lambda x: x.map(lambda y: hl.int(hl.rand_bool(0.5)))))
+
+    chromosome_index_dict = hl.literal(
+        {contig: index for index, contig in enumerate(parentops.locus.dtype.reference_genome.contigs)})
+
+    parentops = parentops.annotate(frame_index=chromosome_index_dict[parentops.locus.contig])
+
+    def do_for_each_pair(index_pairs):
+        index = index_pairs[0]
+        pairs = index_pairs[1]
+        momindex = pairs[0]
+        dadindex = pairs[1]
+        frame_index = parentops.frame_index
+        egg_segments = parentops.paireggcrosses[index][frame_index]
+        sperm_segments = parentops.pairspermcrosses[index][frame_index]
+        position = parentops.locus.position
+        egg_segment_index = hl.binary_search(egg_segments, position)
+        sperm_segment_index = hl.binary_search(sperm_segments, position)
+
+        egg_is_base = egg_segment_index % 2 == 1
+        egg_base = parentops.eggbase[index][frame_index]
+        sperm_is_base = sperm_segment_index % 2 == 1
+        sperm_base = parentops.spermbase[index][frame_index]
+        mombaseoralt = hl.if_else(egg_is_base, egg_base, 1 - egg_base)
+        dadbaseoralt = hl.if_else(sperm_is_base, sperm_base, 1 - sperm_base)
+
+        allelefrommom = parentops.option[momindex].GT[mombaseoralt]
+        allelefromdad = parentops.option[dadindex].GT[dadbaseoralt]
+        child = hl.call(allelefrommom, allelefromdad, phased=True)
+
+        return hl.struct(GT=child)
+
+    parentops = parentops.annotate(new_children=hl.enumerate(parentops.pairs).map(do_for_each_pair),
+                                   parent_GT=parentops.option.map(lambda entry: entry.select('GT')))
+    parentops = parentops.annotate_globals(new_children_ids=hl.enumerate(parentops.pairs).map(lambda idx_and_pair:
+                                                                                              hl.struct(s=hl.str(
+                                                                                                  'child_') + hl.str(
+                                                                                                  idx_and_pair[0]),
+                                                                                                        mother=
+                                                                                                        idx_and_pair[1][
+                                                                                                            0],
+                                                                                                        father=
+                                                                                                        idx_and_pair[1][
+                                                                                                            1],
+                                                                                                        pop=hl.set([
+                                                                                                            parentops.columns[
+                                                                                                                idx_and_pair[
+                                                                                                                    1][
+                                                                                                                    0]].pop,
+                                                                                                            parentops.columns[
+                                                                                                                idx_and_pair[
+                                                                                                                    1][
+                                                                                                                    1]].pop
+                                                                                                        ]))),
+                                           parent_ids=parentops.columns.map(
+                                               lambda column: hl.struct(s=hl.str('parent_') + hl.str(column.sample_idx),
+                                                                        mother=hl.missing('int32'),
+                                                                        father=hl.missing('int32'),
+                                                                        pop=hl.set([column.pop]))))
+    parentops = parentops.annotate(allGT=parentops.parent_GT.extend(parentops.new_children))
+    parentops = parentops.annotate_globals(allIDs=parentops.parent_ids.extend(parentops.new_children_ids))
+    parentops = parentops.drop('new_children', 'parent_ids', 'parent_GT', 'new_children_ids', 'option')
+    mt = parentops._unlocalize_entries('allGT', 'allIDs', ['s'])
+
+    return mt
+
+
+@typecheck(pops=int,
+           n_parentoptions=int,
+           n_variants=int)
+def make_parents(pops, n_parentoptions, n_variants) -> MatrixTable:
+
+    """ Generates a MatrixTable of phased genomes, using the Balding Nichols model,
+    which can be used as parent options in the make_children function
+    Parameters
+    ----------
+    pops: number of populations from which to generate the parent genomes
+    n_parentoptions: number of samples to generate
+    n_variants: number of loci for each sample
+
+    Returns
+    -------
+    :class:`.MatrixTable` of potential parent genomes
+    """
+    chrom = (rand_int(1, 22))
+    mt = hl.balding_nichols_model(pops, n_parentoptions, n_variants, af_dist=hl.rand_beta(0.25, 0.25))
+    grandmother_smaller = hl.rand_bool(0.5)
+    mt = mt.annotate_entries(grandmother=mt.GT[hl.if_else(grandmother_smaller, 0, 1)],
+                             grandfather=mt.GT[hl.if_else(grandmother_smaller, 1, 0)])
+    mt = mt.annotate_entries(GT=hl.call(mt.grandmother, mt.grandfather, phased=True))
+    mt = mt.key_rows_by(
+        locus=hl.locus('chr' + hl.str(chrom), mt.locus.position),
+        alleles=mt.alleles)
+
+    return mt
+
+
+@typecheck(sample1id=str,
+           sample2id=str,
+           mt=MatrixTable)
+def relationship_type(sample1id, sample2id, mt)->str :
+    """
+    Accepts 2 sample id's from a Matrix Table and determines the relationship between them
+
+    Parameters
+    ----------
+    sample1id: sample 1 id
+    sample2id: sample 2 id
+    mt: table containing sample genomes and familiy information - generated from make_children
+
+    Returns
+    -------
+    :class : '.Str' which identifies the relationship between sample1 and sample2
+    """
+    mt2 = mt.add_col_index()
+    sample_id_to_idx = hl.literal(mt2.aggregate_cols(hl.dict(hl.agg.collect((mt2.s, mt2.col_idx)))))
+    children_to_parents = hl.literal(mt2.aggregate_cols(
+        hl.dict(hl.agg.collect((mt2.col_idx, hl.set(hl.if_else(hl.is_defined(mt2.mother), [mt2.mother, mt2.father], hl.empty_array('int32')))))),
+        _localize=False))
+    sample1 = sample_id_to_idx[sample1id]
+    sample2 = sample_id_to_idx[sample2id]
+    sample1_parents = children_to_parents[sample1]
+    sample2_parents = children_to_parents[sample2]
+    return (hl.case()
+        .when(sample1id == sample2id, 'self')
+        .when(sample1_parents.contains(sample2) | sample2_parents.contains(sample1), 'parent-child')
+        .when((sample1_parents.size()>0)&(sample1_parents == sample2_parents)& (sample1id != sample2id), 'sibling')
+        .when(sample1_parents.intersection(sample2_parents).size() == 1, 'half-sibling')
+        .default('unrelated'))

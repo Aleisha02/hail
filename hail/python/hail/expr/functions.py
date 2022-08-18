@@ -6204,3 +6204,20 @@ def shuffle(a, seed: builtins.int = None) -> ArrayExpression:
 def _console_log(msg, result):
     indices, aggregations = unify_all(msg, result)
     return construct_expr(ir.ConsoleLog(msg._ir, result._ir), result.dtype, indices, aggregations)
+
+@typecheck(lower=int,
+           upper=int)
+def rand_int(lower, upper):
+    """
+    Returns randomly selected integer between the lower and upper boundaries
+
+    Parameters
+    ----------
+    lower: lower boundary
+    upper: upper boundary
+
+    Returns
+    -------
+    :class:`.Int32Expression`
+    """
+    return hl.rand_cat(hl.range(upper - lower).map(lambda x: 1)) + lower
